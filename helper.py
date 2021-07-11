@@ -95,7 +95,22 @@ def slide_window_detector(detector, X_train, X_test, sw, fs, train_contextual=Fa
         X_train = X_train.append(X_test[:test_start])
     return train_results, test_results
 
-def label_anomalies(y_train, y_test, sw, fs, alph, eval_opt='global'):
+
+# def create_sequence(values, time_steps):
+#     output = []
+#     for i in range(len(values) - time_steps + 1):
+#         output.append(values[i : (i + time_steps)])
+#     return np.stack(output)
+
+
+# def slide_window_detector(detector, X_train, X_test, time_steps):
+#     x_train = create_sequence(X_train, time_steps)
+#     x_test = create_sequence(X_test, time_steps)
+#     train_scores, test_scores = detector(x_train, x_test)
+#     return train_scores, test_scores
+
+
+def label_anomalies_1(y_train, y_test, sw, fs, alph, eval_opt='global'):
     results = pd.DataFrame([])
     for i in range(len(y_train)):
         temp = pd.DataFrame([])
@@ -115,5 +130,48 @@ def label_anomalies(y_train, y_test, sw, fs, alph, eval_opt='global'):
             temp['label'] = temp['anomaly_score'] > g_mu+alph*g_sigma
         elif eval_opt == 'contextual':
             temp['label'] = temp['anomaly_score'] > c_mu+alph*c_sigma
+        results = results.append(temp)
+    return results
+
+
+def label_anomalies_2(y_test, y_test_label, sw, fs, alph, eval_opt='hybrid'):
+    results = pd.DataFrame([])
+    for i in range(len(y_test)):
+        gscores = []
+        for j in range(0, i-1):
+            temp = np.array(y_test_label[j])
+            gscores.extend(y_test[j][np.where(temp == 0)])
+        
+        if len(gscores) == 0:
+            g_mu = 10000
+            g_sigma = 0
+        else:
+            g_mu = np.mean(gscores)
+            g_sigma = np.std(gscores)
+        alph = 2
+        g_threshold = g_mu+alph*g_sigma
+
+        cscores = []
+        j = i - int(sw/fs)
+        while j >= 0:
+            temp = np.array(y_test_label[j])
+            cscores.extend(y_test[j][np.where(temp==0)])
+            j -= int(sw/fs)
+        if len(cscores) == 0:
+            c_mu = 10000
+            c_sigma = 0
+        else:
+            c_mu = np.mean(cscores)
+            c_sigma = np.std(cscores)
+        c_threshold = c_mu+alph*c_sigma
+        
+        temp = pd.DataFrame([])
+        temp['anomaly_score'] = y_test[i]
+        if eval_opt == 'hybrid':
+            temp['label'] = temp['anomaly_score'] > min(g_threshold, c_threshold)
+        elif eval_opt == 'global':
+            temp['label'] = temp['anomaly_score'] > g_threshold
+        elif eval_opt == 'contextual':
+            temp['label'] = temp['anomaly_score'] > c_threshold
         results = results.append(temp)
     return results
