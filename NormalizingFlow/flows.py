@@ -10,8 +10,7 @@ tfd = tfp.distributions
 tfb = tfp.bijectors
 
 
-def MAF(num_bijectors, hidden_units, activation=tf.nn.relu):
-    base_dist = tfd.MultivariateNormalDiag(loc=tf.zeros([2], tf.float32), scale_diag=tf.ones([2], tf.float32))
+def MAF(base_dist, num_bijectors, hidden_units, activation=tf.nn.relu):
     bijectors = []
     for i in range(num_bijectors):
         made = tfb.AutoregressiveNetwork(params=2, hidden_units=hidden_units, activation=activation)

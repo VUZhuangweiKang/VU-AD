@@ -71,7 +71,7 @@ def plot_samples(samples, names, rows=1, legend=False):
 
 
 def train_dist_routine(X_data, trainable_dist, n_epochs=200, batch_size=None, n_disp=100, lr=1e-3):
-    x_ = Input(shape=(X_data.shape[1], ), dtype=tf.float32)
+    x_ = Input(shape=(X_data.shape[1],))
     log_prob_ = trainable_dist.log_prob(x_)
     model = Model(x_, log_prob_)
 
