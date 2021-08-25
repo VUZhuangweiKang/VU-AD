@@ -1,5 +1,6 @@
 import numpy as np
 import tensorflow as tf
+tf1=tf.compat.v1
 import tensorflow_probability as tfp
 import tensorflow.keras as tfk
 from tensorflow.keras.layers import Input, Dense
@@ -25,8 +26,7 @@ def MAF(base_dist, num_bijectors, hidden_units, activation=tf.nn.relu):
     return flow
 
 
-def IAF(num_bijectors, hidden_units, activation=tf.nn.relu):
-    base_dist = tfd.MultivariateNormalDiag(loc=tf.zeros([2], tf.float32), scale_diag=tf.ones([2], tf.float32))
+def IAF(base_dist, num_bijectors, hidden_units, activation=tf.nn.relu):
     bijectors = []
     for i in range(num_bijectors):
         made = tfb.AutoregressiveNetwork(params=2, hidden_units=hidden_units, activation=activation)
@@ -127,3 +127,59 @@ class RealNVP(Model):
         self.loss_tracker.update_state(loss)
 
         return {"loss": self.loss_tracker.result()}
+
+
+
+class PReLU(tfb.Bijector):
+    def __init__(self, alpha=0.5, validate_args=False, name="prelu"):
+        super(PReLU, self).__init__(
+            forward_min_event_ndims=0, validate_args=validate_args, name=name)
+        self.alpha = alpha
+
+    def _forward(self, x):
+        return tf1.where(tf1.greater_equal(x, 0), x, self.alpha * x)
+
+    def _inverse(self, y):
+        return tf1.where(tf1.greater_equal(y, 0), y, 1. / self.alpha * y)
+
+    def _inverse_log_det_jacobian(self, y):
+        I = tf1.ones_like(y)
+        J_inv = tf1.where(tf1.greater_equal(y, 0), I, 1.0 / self.alpha * I)
+        log_abs_det_J_inv = tf1.log(tf1.abs(J_inv))
+        return log_abs_det_J_inv
+
+
+"""
+Y = g(X; shift, scale) = scale @ X + shift
+scale = (
+  scale_identity_multiplier * tf.diag(tf.ones(d)) +
+  tf.diag(scale_diag) +
+  scale_tril +
+  scale_perturb_factor @ diag(scale_perturb_diag) @
+    tf.transpose([scale_perturb_factor])
+)
+"""
+def mlp_flow(base_dist, input_dims, num_bijectors):
+    bijectors = []
+    
+    k = input_dims
+    for i in range(num_bijectors):
+        with tf1.variable_scope('bijector_%d' % i):
+            d = k
+            V = tf1.get_variable('V%d'%i, [k, k], dtype=tf1.float32)  # factor loading
+            shift = tf1.get_variable('shift%d'%i, [k], dtype=tf1.float32)  # affine shift
+            L = tf1.get_variable('L%d'%i, [int(k * (k + 1) / 2)], dtype=tf1.float32)  # lower triangular
+            bijectors.append(tfb.Affine(
+                scale_tril=tfp.math.fill_triangular(L),
+                scale_perturb_factor=V,
+                shift=shift,
+            ))
+            alpha = tf1.abs(tf1.get_variable('alpha%d'%i, [], dtype=tf1.float32)) + .01
+            bijectors.append(PReLU(alpha=alpha, name='prelu%d' % i))
+
+    mlp_bijector = tfb.Chain(list(reversed(bijectors[:-1])), name='mlp_bijector')
+    flow = tfd.TransformedDistribution(
+        distribution=base_dist,
+        bijector=mlp_bijector
+    )
+    return flow

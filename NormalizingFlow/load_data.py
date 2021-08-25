@@ -3,6 +3,7 @@ from sklearn.preprocessing import StandardScaler
 import pandas as pd
 import numpy as np
 import tensorflow as tf
+tf1=tf.compat.v1
 import tensorflow_probability as tfp
 tfd = tfp.distributions
 
@@ -10,8 +11,25 @@ def load_moon_dataset(n_samples=1000):
     noisy_moons = datasets.make_moons(n_samples=n_samples, noise=.05)
     X, y = noisy_moons
     X_data = StandardScaler().fit_transform(X)
-    return X_data
-    
+    return X_data.astype(np.float32)
+
+
+def load_single_moon_dataset(samples=1000, batch_size=512):
+    x2_dist = tfd.Normal(loc=0., scale=4.)
+    x2_samples = x2_dist.sample(batch_size)
+    x1 = tfd.Normal(loc=.25 * tf.square(x2_samples),
+                    scale=tf.ones(batch_size, dtype=tf.float32))
+    x1_samples = x1.sample()
+    X_data = tf.stack([x1_samples, x2_samples], axis=1)
+    try:
+        X_data = X_data.numpy()
+    except:
+        sess = tf1.InteractiveSession()
+        sess.run(tf1.global_variables_initializer())
+        X_data = X_data.eval(session=sess)
+    X_data = StandardScaler().fit_transform(X_data)
+    return X_data.astype(np.float32)
+
 
 def load_gaussian(n_samples=2000):
     mean = [0.4, 1]
@@ -20,7 +38,7 @@ def load_gaussian(n_samples=2000):
     X = np.random.multivariate_normal(mean, cov, n_samples)
     xlim, ylim = [-2, 2], [-2, 2]
     X_data = StandardScaler().fit_transform(X)
-    return X_data
+    return X_data.astype(np.float32)
 
 
 def load_smd_dataset(group, entity):

@@ -3,6 +3,8 @@ import numpy as np
 from mpl_toolkits.axes_grid1.axes_divider import make_axes_locatable
 
 import tensorflow as tf
+import tensorflow.keras as tfk
+tf1=tf.compat.v1
 from tensorflow.keras.callbacks import LambdaCallback
 from tensorflow.keras import Model
 from tensorflow.keras.layers import Input
@@ -56,7 +58,12 @@ def plot_samples(samples, names, rows=1, legend=False):
     for r in range(rows):
         for c in range(cols):
             res = samples[i]
-            X, Y = res[..., 0].numpy(), res[..., 1].numpy()
+            try:
+                X, Y = res[..., 0].numpy(), res[..., 1].numpy()
+            except:
+                sess = tf1.InteractiveSession()
+                sess.run(tf1.global_variables_initializer())
+                X, Y = res[..., 0].eval(session=sess), res[..., 1].eval(session=sess)
             if rows == 1:
                 p = arr[c]
             else:
@@ -96,6 +103,45 @@ def train_dist_routine(X_data, trainable_dist, n_epochs=200, batch_size=None, n_
                         callbacks=[epoch_callback])
     return history
 
+
+@tf.function
+def train_step(X_data, optimizer, trainable_dist): 
+    with tf.GradientTape() as tape:
+        loss = -tf.reduce_mean(trainable_dist.log_prob(X_data)) 
+    gradients = tape.gradient(loss, trainable_dist.trainable_variables)
+    optimizer.apply_gradients(zip(gradients, trainable_dist.trainable_variables))
+    return loss
+
+def train_dist_routine(X_data, flow, learning_rate=1e-3, steps=1000):
+    -tf.reduce_mean(flow.log_prob(X_data)) 
+    optimizer = tfk.optimizers.Adam(learning_rate=learning_rate)
+    losses = []
+    for i in range(steps):
+        loss = train_step(X_data, optimizer, flow)
+        losses.append(loss)
+        if (i % 100 == 0):
+            print('steps:', i, "\t loss:",loss.numpy())
+    return losses
+
+
+def train_dist_routine_v1(X_data, trainable_dist, steps=int(1e4), learning_rate=1e-3):
+    global_step = []
+    np_losses = []
+
+    sess = tf1.InteractiveSession()
+    sess.run(tf1.global_variables_initializer())
+    loss = -tf1.reduce_mean(trainable_dist.log_prob(X_data))
+    train_op = tf1.train.AdamOptimizer(learning_rate).minimize(loss)
+    sess.run(tf1.global_variables_initializer())
+
+    for i in range(steps):
+        _, np_loss = sess.run([train_op, loss])
+        if i % 100 == 0:
+            global_step.append(i)
+            np_losses.append(np_loss)
+        if i % int(1000) == 0:
+            print(i, np_loss)
+    return np_losses
 
 def plot_loss(train_hist):
     train_losses = train_hist.history['loss']
