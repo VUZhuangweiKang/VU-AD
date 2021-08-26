@@ -8,6 +8,9 @@ tf1=tf.compat.v1
 from tensorflow.keras.callbacks import LambdaCallback
 from tensorflow.keras import Model
 from tensorflow.keras.layers import Input
+from scipy.stats import truncnorm
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import precision_recall_fscore_support as score
 
 
 # Define a plot contour routine
@@ -69,15 +72,13 @@ def plot_samples(samples, names, rows=1, legend=False):
             else:
                 p = arr[r, c]
             p.scatter(X, Y, s=10, color='red')
-            p.set_xlim([-5, 5])
-            p.set_ylim([-5, 5])
-            # p.set_title(names[i])
+            p.set_title(names[i])
             
             i += 1
     plt.show()
 
 
-def train_dist_routine(X_data, trainable_dist, n_epochs=200, batch_size=None, n_disp=100, lr=1e-3):
+def train_dist_routine_(X_data, trainable_dist, n_epochs=200, batch_size=None, n_disp=100, lr=1e-3):
     x_ = Input(shape=(X_data.shape[1],))
     log_prob_ = trainable_dist.log_prob(x_)
     model = Model(x_, log_prob_)
@@ -136,7 +137,7 @@ def train_dist_routine_v1(X_data, trainable_dist, steps=int(1e4), learning_rate=
 
     for i in range(steps):
         _, np_loss = sess.run([train_op, loss])
-        if i % 100 == 0:
+        if i % 500 == 0:
             global_step.append(i)
             np_losses.append(np_loss)
         if i % int(1000) == 0:
@@ -167,8 +168,8 @@ def visualize_training_data(X_data, samples):
         res = samples[i]
         X, Y = res[..., 0].numpy(), res[..., 1].numpy()
         arr[i].scatter(X, Y, s=10, color='red')
-        arr[i].set_xlim([-2, 2])
-        arr[i].set_ylim([-2, 2])
+        arr[i].set_xlim([-3, 3])
+        arr[i].set_ylim([-3, 3])
         arr[i].set_title(names[i])
 
 
@@ -182,3 +183,53 @@ def make_samples(base_distribution, trainable_distribution, n_samples=1000, dims
         samples.append(x)
         names.append(bijector.name)
     return names, samples
+
+
+def detect_anomalies(data, model, threshold=None):
+    pdf = model.prob(data).numpy()
+    if threshold is None:
+        z_scores = stats.zscore(pdf)
+        anomalies = np.where((z_scores > 2) | (z_scores < -2))
+    else:
+        anomalies = np.where(pdf < threshold)
+    return anomalies
+
+def label_anomalies(X_data, anomaly_index):
+    plt.scatter(X_data[:, 0], X_data[:, 1], s=10, color='red', label='X_data')
+    plt.scatter(X_data[anomaly_index, 0], X_data[anomaly_index, 1], s=10, color='blue', label='Anomalies')
+    plt.legend()
+    plt.show()
+
+
+# sample from the tail(-inf, mu-2sigma) & (mu+2sigma, inf) of a well-known(Gaussian) distribution
+def sample_anomalies(flow, n_samples=1000, mu=0, sigma=1, factor=2, sample_shape=2):
+    clip_a_l = -np.inf
+    clip_b_l = mu - factor * sigma
+    clip_a_r = mu + factor * sigma
+    clip_b_r = np.inf
+
+    X1_samples = truncnorm.rvs(a=clip_a_l, b=clip_b_l, loc=mu, scale=sigma, size=(n_samples//2, sample_shape))
+    X2_samples = truncnorm.rvs(a=clip_a_r, b=clip_b_r, loc=mu, scale=sigma, size=(n_samples//2, sample_shape))
+    samples = np.vstack([X1_samples, X2_samples]).astype(np.float32)
+    generated_anomalies = flow.bijector.forward(samples).numpy()
+    return generated_anomalies
+
+def sample_normals(flow, n_samples=3000, mu=0, sigma=1, factor=2, sample_shape=2):
+    clip_a = mu - factor * sigma
+    clip_b = mu + factor * sigma
+
+    a, b = (clip_a - mu) / sigma, (clip_b - mu) / sigma
+    samples = truncnorm.rvs(a=a, b=b, loc=mu, scale=sigma, size=(n_samples, sample_shape)).astype(np.float32)
+    samples = flow.bijector.forward(samples).numpy()
+    return samples
+
+
+def RFClassifier(X_train, y_train, X_test=None, y_test=None):
+    clf = RandomForestClassifier(max_depth=5, random_state=0)
+    clf.fit(X_train, y_train)
+
+    score = None
+    if X_test and y_test:
+        predicted = clf.predict(X_test)
+        score = score(y_test, predicted)
+    return clf, score

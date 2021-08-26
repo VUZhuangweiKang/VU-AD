@@ -7,8 +7,8 @@ tf1=tf.compat.v1
 import tensorflow_probability as tfp
 tfd = tfp.distributions
 
-def load_moon_dataset(n_samples=1000):
-    noisy_moons = datasets.make_moons(n_samples=n_samples, noise=.05)
+def load_moon_dataset(n_samples=1000, noise=0.05):
+    noisy_moons = datasets.make_moons(n_samples=n_samples, noise=noise)
     X, y = noisy_moons
     X_data = StandardScaler().fit_transform(X)
     return X_data.astype(np.float32)
@@ -36,24 +36,18 @@ def load_gaussian(n_samples=2000):
     A = np.array([[2, .3], [-1., 4]])
     cov = A.T.dot(A)
     X = np.random.multivariate_normal(mean, cov, n_samples)
-    xlim, ylim = [-2, 2], [-2, 2]
     X_data = StandardScaler().fit_transform(X)
     return X_data.astype(np.float32)
 
 
-def load_smd_dataset(group, entity):
-    SMD_BASE_PATH = 'Dataset/SMD'
-
-    X_train = load_data('%s/train/machine-%d-%d.txt' % (SMD_BASE_PATH, group, entity), header=False)
-    X_train.columns = ['m%d' % i for i in range(X_train.shape[1])]
-    X_train.index = pd.date_range('2021/03/02', '2021/03/21', periods=X_train.shape[0])
-    X_train.index.name = 'timestamp'
-
-    X_test = load_data('%s/test/machine-%d-%d.txt' % (SMD_BASE_PATH, group, entity), header=False)
-    X_test.columns = ['m%d' % i for i in range(X_test.shape[1])]
-    X_test.index = pd.date_range('2021/03/21', '2021/4/8', periods=X_test.shape[0])
-    X_test.index.name = 'timestamp'
-
-    y_true = pd.read_csv('Dataset/SMD/test_label/machine-%d-%d.txt' % (group, entity), header=None)
-    y_true.columns = ['label']
-    y_true.index = X_test.index
+def load_smd_dataset(group=1, entity=3, select_dims=None):
+    SMD_BASE_PATH = '../Dataset/SMD'
+    X_data = pd.read_csv('%s/train/machine-%d-%d.txt' % (SMD_BASE_PATH, group, entity), header=None)
+    if select_dims is None:
+        select_dims = np.random.randint(low=0, high=X_data.shape[1], size=2)
+    else:
+        assert type(select_dims) is list
+    X_data = X_data.iloc[:, select_dims]
+    X_data = StandardScaler().fit_transform(X_data)
+    y = pd.read_csv('%s/test_label/machine-%d-%d.txt' % (SMD_BASE_PATH, group, entity), header=None)
+    return X_data.astype(np.float32), y.astype(np.float32)
