@@ -40,23 +40,14 @@ class AutoEncoder(Model):
         self.encoder = encoder
         self.decoder = decoder
         self.optimizer = tf.optimizers.Adam(learning_rate=learning_rate)
-
-        # self.total_loss_tracker = tfk.metrics.Mean(name="total_loss")
-        self.reconstruction_loss_tracker = tfk.metrics.Mean(
-            name="reconstruction_loss"
-        )
-        # self.kl_loss_tracker = tfk.metrics.Mean(name="kl_loss")
+        self.reconstruction_loss_tracker = tfk.metrics.Mean(name="reconstruction_loss")
 
         self.flow_model = flow_model
         self.flow_opt = flow_opt
 
     @property
     def metrics(self):
-        return [
-            # self.total_loss_tracker,
-            self.reconstruction_loss_tracker,
-            # self.kl_loss_tracker,
-        ]
+        return [self.reconstruction_loss_tracker]
 
     def call(self, data):
         latent_space = self.encoder(data)
@@ -71,17 +62,9 @@ class AutoEncoder(Model):
                 z = self.flow_model.bijector.forward(z)
             reconstruction = self.decoder(z)
             reconstruction_loss = tfk.losses.mean_squared_error(data, reconstruction)
-            # kl_loss = tf.losses.kl_divergence(data, reconstruction)
-            # total_loss = reconstruction_loss + kl_loss
-        
+
         grads = tape.gradient(reconstruction_loss, self.trainable_weights)
         self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
 
-        # self.total_loss_tracker.update_state(total_loss)
         self.reconstruction_loss_tracker.update_state(reconstruction_loss)
-        # self.kl_loss_tracker.update_state(kl_loss)
-        return {
-            # "loss": self.total_loss_tracker.result(),
-            "reconstruction_loss": self.reconstruction_loss_tracker.result(),
-            # "kl_loss": self.kl_loss_tracker.result()
-        }
+        return {"reconstruction_loss": self.reconstruction_loss_tracker.result()}
