@@ -11,12 +11,12 @@ tfd = tfp.distributions
 tfb = tfp.bijectors
 
 
-def MAF(base_dist, num_bijectors, hidden_units, activation=tf.nn.relu):
+def MAF(base_dist, num_bijectors, hidden_units, ndims, activation=tf.nn.relu):
     bijectors = []
     for i in range(num_bijectors):
         made = tfb.AutoregressiveNetwork(params=2, hidden_units=hidden_units, activation=activation)
         maf = tfb.MaskedAutoregressiveFlow(shift_and_log_scale_fn=made)
-        permute = tfb.Permute(permutation=[1, 0])
+        permute = tfb.Permute(permutation=np.arange(ndims)[::-1])
         bijectors.append(maf)
         bijectors.append(permute)
 
@@ -26,12 +26,12 @@ def MAF(base_dist, num_bijectors, hidden_units, activation=tf.nn.relu):
     return flow
 
 
-def IAF(base_dist, num_bijectors, hidden_units, activation=tf.nn.relu):
+def IAF(base_dist, num_bijectors, hidden_units, ndims, activation=tf.nn.relu):
     bijectors = []
     for i in range(num_bijectors):
         made = tfb.AutoregressiveNetwork(params=2, hidden_units=hidden_units, activation=activation)
         maf = tfb.MaskedAutoregressiveFlow(shift_and_log_scale_fn=made)
-        permute = tfb.Permute(permutation=[1, 0])
+        permute = tfb.Permute(permutation=np.arange(ndims)[::-1])
         bijectors.append(tfb.Invert(maf))
         bijectors.append(permute)
 
