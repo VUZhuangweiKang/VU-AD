@@ -1,9 +1,8 @@
-pyOD~=0.8.7
-sklearn~=0.0
-numpy~=1.20.2
-pandas~=1.2.4
-scikit-learn~=0.22.2.post1
+pyOD
+sklearn
+numpy
+pandas
 combo
 pymc3
-tensorflow==2.6.0
-tensorflow_probability==0.13.0
+tensorflow
+tensorflow_probability
