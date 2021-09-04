@@ -1,5 +1,5 @@
 from sklearn import cluster, datasets, mixture
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 import pandas as pd
 import numpy as np
 import tensorflow as tf

@@ -4,9 +4,14 @@ tf1=tf.compat.v1
 from tensorflow.keras.callbacks import LambdaCallback
 from tensorflow.keras import Model
 from tensorflow.keras.layers import Input
+import tensorflow_probability as tfp
 import numpy as np
 
+tfd = tfp.distributions
+tfb = tfp.bijectors
 
+
+"""
 def train_dist_routine_(X_data, trainable_dist, n_epochs=200, batch_size=None, n_disp=100, lr=1e-3):
     x_ = Input(shape=(X_data.shape[1],))
     log_prob_ = trainable_dist.log_prob(x_)
@@ -32,19 +37,30 @@ def train_dist_routine_(X_data, trainable_dist, n_epochs=200, batch_size=None, n
                         verbose=False,
                         callbacks=[epoch_callback])
     return history
+"""
 
 
 @tf.function
 def train_step(X_data, optimizer, trainable_dist): 
     with tf.GradientTape() as tape:
-        loss = -tf.reduce_mean(trainable_dist.log_prob(X_data)) 
+        nll = -trainable_dist.log_prob(X_data)
+        # tf.print(tf.reduce_mean(nll), tf.reduce_min(nll), tf.reduce_max(nll))
+        threshold = -7
+        outliers = tf.cast(tf.gather(nll, tf.where(tf.less(nll, threshold))[:, 0]), tf.float32)
+        if tf.shape(outliers)[0] == 0:
+            loss = tf.reduce_mean(nll)
+        else:
+            loss = tf.reduce_mean(nll) - tf.reduce_mean(outliers)
+
+        # loss = -tf.reduce_mean(trainable_dist.log_prob(X_data)) 
+        
     gradients = tape.gradient(loss, trainable_dist.trainable_variables)
     optimizer.apply_gradients(zip(gradients, trainable_dist.trainable_variables))
     return loss
 
 def train_dist_routine(X_data, flow, learning_rate=1e-3, steps=1000):
     -tf.reduce_mean(flow.log_prob(X_data)) 
-    optimizer = tfk.optimizers.Adam(learning_rate=learning_rate)
+    optimizer = tfk.optimizers.Adam(learning_rate=learning_rate, decay=1e-5)
     losses = []
     for i in range(steps):
         loss = train_step(X_data, optimizer, flow)
