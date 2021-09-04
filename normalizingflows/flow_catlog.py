@@ -131,7 +131,8 @@ class MAF(AutoRegressiveFlowModel):
             if self.use_batchnorm and i % 2 == 0:
                 bijectors.append(BatchNorm(name='batch_norm%d' % i))
 
-            permute = tfb.Permute(permutation=np.arange(self.ndims)[::-1])
+            permute = np.concatenate([np.arange(self.ndims//2, self.ndims), np.arange(self.ndims//2)])
+            permute = tfb.Permute(permutation=permute)
             bijectors.append(permute)
 
         # Discard the last Permute layer.
@@ -140,14 +141,17 @@ class MAF(AutoRegressiveFlowModel):
 
     def train_step(self, data): 
         with tf.GradientTape() as tape:
-            nll = self.flow.log_prob(data)
+            nll = -self.flow.log_prob(data)
 
             # tf.print(tf.reduce_mean(nll), tf.reduce_min(nll), tf.reduce_max(nll))
-            threshold = -5
+            # threshold = -5
             # outliers = tf.cast(tf.gather(nll, tf.where(tf.less(nll, threshold))[:, 0]), tf.float32)
-            # loss = tf.reduce_mean(nll) - tf.reduce_mean(outliers)
+            # if tf.shape(outliers)[0] == 0:
+            #     loss = tf.reduce_mean(nll)
+            # else:
+            #     loss = tf.reduce_mean(nll) - tf.reduce_mean(outliers)
 
-            loss = -tf.reduce_mean(nll)
+            loss = tf.reduce_mean(nll)
         gradients = tape.gradient(loss, self.flow.trainable_variables)
         self.optimizer.apply_gradients(zip(gradients, self.flow.trainable_variables))
 

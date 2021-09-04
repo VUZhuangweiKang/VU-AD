@@ -44,15 +44,16 @@ def train_dist_routine_(X_data, trainable_dist, n_epochs=200, batch_size=None, n
 def train_step(X_data, optimizer, trainable_dist): 
     with tf.GradientTape() as tape:
         nll = -trainable_dist.log_prob(X_data)
-        # tf.print(tf.reduce_mean(nll), tf.reduce_min(nll), tf.reduce_max(nll))
-        threshold = -7
-        outliers = tf.cast(tf.gather(nll, tf.where(tf.less(nll, threshold))[:, 0]), tf.float32)
-        if tf.shape(outliers)[0] == 0:
-            loss = tf.reduce_mean(nll)
-        else:
-            loss = tf.reduce_mean(nll) - tf.reduce_mean(outliers)
 
-        # loss = -tf.reduce_mean(trainable_dist.log_prob(X_data)) 
+        # tf.print(tf.reduce_mean(nll), tf.reduce_min(nll), tf.reduce_max(nll))
+        # threshold = 3
+        # outliers = tf.cast(tf.gather(nll, tf.where(tf.less(nll, threshold))[:, 0]), tf.float32)
+        # if tf.shape(outliers)[0] == 0:
+        #     loss = tf.reduce_mean(nll)
+        # else:
+        #     loss = tf.reduce_mean(nll) - tf.reduce_mean(outliers)
+
+        loss = tf.reduce_mean(nll) 
         
     gradients = tape.gradient(loss, trainable_dist.trainable_variables)
     optimizer.apply_gradients(zip(gradients, trainable_dist.trainable_variables))
