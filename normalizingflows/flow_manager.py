@@ -43,7 +43,8 @@ def train_dist_routine_(X_data, trainable_dist, n_epochs=200, batch_size=None, n
 @tf.function
 def train_step(X_data, optimizer, trainable_dist): 
     with tf.GradientTape() as tape:
-        nll = -trainable_dist.log_prob(X_data)
+        tape.watch(trainable_dist.trainable_variables)
+        nll = -tf.reduce_mean(trainable_dist.log_prob(X_data))
 
         # tf.print(tf.reduce_mean(nll), tf.reduce_min(nll), tf.reduce_max(nll))
         # threshold = 3
@@ -53,15 +54,15 @@ def train_step(X_data, optimizer, trainable_dist):
         # else:
         #     loss = tf.reduce_mean(nll) - tf.reduce_mean(outliers)
 
-        loss = tf.reduce_mean(nll) 
-        
+        loss = nll
+
     gradients = tape.gradient(loss, trainable_dist.trainable_variables)
     optimizer.apply_gradients(zip(gradients, trainable_dist.trainable_variables))
     return loss
 
 def train_dist_routine(X_data, flow, learning_rate=1e-3, steps=1000):
     -tf.reduce_mean(flow.log_prob(X_data)) 
-    optimizer = tfk.optimizers.Adam(learning_rate=learning_rate, decay=1e-5)
+    optimizer = tfk.optimizers.Adam(learning_rate=learning_rate, decay=1e-6)
     losses = []
     for i in range(steps):
         loss = train_step(X_data, optimizer, flow)

@@ -4,7 +4,7 @@ import tensorflow as tf
 tf1=tf.compat.v1
 import tensorflow_probability as tfp
 import tensorflow.keras as tfk
-from tensorflow.keras.layers import Input, Dense
+from tensorflow.keras.layers import Input, Dense, Layer
 from tensorflow.keras import Model
 from tensorflow.keras import regularizers
 from abc import ABCMeta, abstractmethod
@@ -57,7 +57,7 @@ class BatchNorm(tfb.Bijector):
         return abs_log_det_J_inv
 
 
-class AutoRegressiveFlowModel(Model):
+class FlowModel(Model):
     def __init__(self, 
                  base_dist, 
                  num_bijectors, 
@@ -65,18 +65,22 @@ class AutoRegressiveFlowModel(Model):
                  ndims, 
                  activation=tf.nn.relu, 
                  learning_rate=1e-3,
-                 weight_decay=1e-4,
                  use_batchnorm=False,
                  **kwargs):
-        super(AutoRegressiveFlowModel, self).__init__(**kwargs)
+        super(FlowModel, self).__init__(**kwargs)
         self.base_dist = base_dist
         self.num_bijectors = num_bijectors
         self.hidden_units = hidden_units
         self.ndims = ndims
         self.activation = activation
         self.use_batchnorm = use_batchnorm
-        self.optimizer = tf.optimizers.Adam(learning_rate=learning_rate, decay=weight_decay)
+
+        max_epochs = int(15e3)
+        learning_rate_fn = tfk.optimizers.schedules.PolynomialDecay(learning_rate, max_epochs, learning_rate/10, power=0.5)
+        self.optimizer = tf.optimizers.Adam(learning_rate=learning_rate_fn)
         self.loss_tracker = tfk.metrics.Mean(name="loss")
+
+        self.flow = None
 
     @abstractmethod
     def build_flow(self):
@@ -84,172 +88,192 @@ class AutoRegressiveFlowModel(Model):
 
     def call(self, *inputs):
         return self.flow.bijector.forward(*inputs)
+    
+    @tf.function
+    def train_step(self, data): 
+        with tf.GradientTape() as tape:
+            tape.watch(self.flow.trainable_variables)
+
+            threshold = -3.
+            nll = -self.flow.log_prob(data)
+            outliers = tf.cast(tf.gather(nll, tf.where(tf.less(nll, threshold))[:, 0]), tf.float32)
+            if tf.shape(outliers)[0] == 0:
+                loss = tf.reduce_mean(nll)
+            else:
+                loss = tf.reduce_mean(nll) - tf.reduce_mean(outliers)
+
+            # loss = -tf.reduce_mean(self.flow.log_prob(data))
+        gradients = tape.gradient(loss, self.flow.trainable_variables)
+        self.optimizer.apply_gradients(zip(gradients, self.flow.trainable_variables))
+
+        self.loss_tracker.update_state(loss)
+        return {"loss": self.loss_tracker.result()}
 
 
-class IAF(AutoRegressiveFlowModel):
+'''--------------------------------------------- Inverse Autoregressive Flow -----------------------------------------------'''
+
+class IAF(FlowModel):
     def __init__(self, *args, **kwargs):
         super(IAF, self).__init__(*args, **kwargs)
         self.build_flow()
 
     def build_flow(self):
         bijectors = []
+        permutation = tf.cast(np.concatenate((np.arange(self.ndims / 2, self.ndims), np.arange(0, self.ndims / 2))), tf.int32)
         for i in range(self.num_bijectors):
             made = tfb.AutoregressiveNetwork(params=2, hidden_units=self.hidden_units, activation=self.activation)
             maf = tfb.MaskedAutoregressiveFlow(shift_and_log_scale_fn=made)
             bijectors.append(tfb.Invert(maf))
             if self.use_batchnorm and i % 2 == 0:
                 bijectors.append(BatchNorm(name='batch_norm%d' % i))
-
-            permute = tfb.Permute(permutation=np.arange(self.ndims)[::-1])
-            bijectors.append(permute)
+            bijectors.append(tfb.Permute(permutation=permutation))
 
         # Discard the last Permute layer.
-        flow_bijector = tfb.Chain(list(reversed(bijectors[:-1])))
+        flow_bijector = tfb.Chain(list(reversed(bijectors)))
         self.flow = tfd.TransformedDistribution(distribution=self.base_dist, bijector=flow_bijector)
-    
-    def train_step(self, data): 
-        with tf.GradientTape() as tape:
-            loss = -tf.reduce_mean(self.flow.log_prob(data)) 
-        gradients = tape.gradient(loss, self.flow.trainable_variables)
-        self.optimizer.apply_gradients(zip(gradients, self.flow.trainable_variables))
-
-        self.loss_tracker.update_state(loss)
-        return {"loss": self.loss_tracker.result()}
 
 
-class MAF(AutoRegressiveFlowModel):
+'''--------------------------------------------- Masked Autoregressive Flow -----------------------------------------------'''
+
+class Made(tfk.layers.Layer):
+    def __init__(self, params, hidden_units=None, activation=None, use_bias=True,
+                 kernel_regularizer=None, bias_regularizer=None, name="made"):
+
+        super(Made, self).__init__(name=name)
+
+        self.params = params
+        self.hidden_units = hidden_units
+        self.activation = activation
+        self.use_bias = use_bias
+        self.kernel_regularizer = kernel_regularizer
+        self.bias_regularizer = bias_regularizer
+
+        self.network = tfb.AutoregressiveNetwork(params=params, hidden_units=hidden_units, activation=activation, 
+                                                 use_bias=use_bias, kernel_regularizer=kernel_regularizer, 
+                                                 bias_regularizer=bias_regularizer)
+
+    def call(self, x):
+        shift, log_scale = tf.unstack(self.network(x), num=2, axis=-1)
+
+        return shift, tf.math.tanh(log_scale)
+
+
+class MAF(FlowModel):
     def __init__(self, *args, **kwargs):
         super(MAF, self).__init__(*args, **kwargs)
         self.build_flow()
 
     def build_flow(self):
         bijectors = []
+        bijectors.append(BatchNorm(eps=10e-5, decay=0.95))
+        permutation = tf.cast(np.concatenate((np.arange(self.ndims / 2, self.ndims), np.arange(0, self.ndims / 2))), tf.int32)
         for i in range(self.num_bijectors):
-            made = tfb.AutoregressiveNetwork(params=2, hidden_units=self.hidden_units, activation=self.activation)
-            maf = tfb.MaskedAutoregressiveFlow(shift_and_log_scale_fn=made)
+            made = Made(params=2, hidden_units=self.hidden_units, activation=self.activation)
+            maf = tfb.MaskedAutoregressiveFlow(shift_and_log_scale_fn=made, validate_args=True)
             bijectors.append(maf)
-            if self.use_batchnorm and i % 2 == 0:
-                bijectors.append(BatchNorm(name='batch_norm%d' % i))
+            bijectors.append(tfb.Permute(permutation=permutation))
+            if self.use_batchnorm and (i+1) % 2 == 0:
+                bijectors.append(BatchNorm(eps=10e-5, decay=0.95))
 
-            permute = np.concatenate([np.arange(self.ndims//2, self.ndims), np.arange(self.ndims//2)])
-            permute = tfb.Permute(permutation=permute)
-            bijectors.append(permute)
-
-        # Discard the last Permute layer.
-        flow_bijector = tfb.Chain(list(reversed(bijectors[:-1])))
+        flow_bijector = tfb.Chain(list(reversed(bijectors)))
         self.flow = tfd.TransformedDistribution(distribution=self.base_dist, bijector=flow_bijector)
 
-    def train_step(self, data): 
-        with tf.GradientTape() as tape:
-            nll = -self.flow.log_prob(data)
 
-            # tf.print(tf.reduce_mean(nll), tf.reduce_min(nll), tf.reduce_max(nll))
-            # threshold = -5
-            # outliers = tf.cast(tf.gather(nll, tf.where(tf.less(nll, threshold))[:, 0]), tf.float32)
-            # if tf.shape(outliers)[0] == 0:
-            #     loss = tf.reduce_mean(nll)
-            # else:
-            #     loss = tf.reduce_mean(nll) - tf.reduce_mean(outliers)
+'''--------------------------------------------- Real NVP -----------------------------------------------'''
 
-            loss = tf.reduce_mean(nll)
-        gradients = tape.gradient(loss, self.flow.trainable_variables)
-        self.optimizer.apply_gradients(zip(gradients, self.flow.trainable_variables))
+class NN(Layer):
+    """
+    Neural Network Architecture for calcualting s and t for Real-NVP
+    
+    :param input_shape: shape of the data coming in the layer
+    :param hidden_units: Python list-like of non-negative integers, specifying the number of units in each hidden layer.
+    :param activation: Activation of the hidden units
+    """
+    def __init__(self, input_shape, n_hidden=[512, 512], activation="relu", name="nn"):
+        super(NN, self).__init__(name="nn")
+        layer_list = []
+        for i, hidden in enumerate(n_hidden):
+            layer_list.append(Dense(hidden, activation=activation))
+        self.layer_list = layer_list
+        self.log_s_layer = Dense(input_shape, activation="tanh", name='log_s')
+        self.t_layer = Dense(input_shape, name='t')
 
-        self.loss_tracker.update_state(loss)
-        return {"loss": self.loss_tracker.result()}
-
-
-# --------------------------------------------------
-
-# Creating a custom layer with keras API.
-def Coupling(input_dims, scale_net_layers=4, shift_net_layers=4, output_dim=256):
-    input = Input(shape=input_dims)
-    reg = 0.01
-
-    input_ = input
-    for i in range(scale_net_layers):
-        layer = Dense(output_dim, activation="relu", kernel_regularizer=regularizers.l2(reg))(input_)
-        input_ = layer
-    shift_net_out = Dense(input_dims, activation="linear", kernel_regularizer=regularizers.l2(reg))(input_)
-
-    for i in range(shift_net_layers):
-        layer = Dense(output_dim, activation="relu", kernel_regularizer=regularizers.l2(reg))(input_)
-        input_ = layer
-    scale_net_out = Dense(input_dims, activation="tanh", kernel_regularizer=regularizers.l2(reg))(input_)
-
-    return Model(inputs=input, outputs=[scale_net_out, shift_net_out])
+    def call(self, x):
+        y = x
+        for layer in self.layer_list:
+            y = layer(y)
+        log_s = self.log_s_layer(y)
+        t = self.t_layer(y)
+        return log_s, t
 
 
-class RealNVP(Model):
-    def __init__(self, input_shape, num_coupling_layers):
-        super(RealNVP, self).__init__()
+class RealNVPBijector(tfb.Bijector):
+    """
+    Implementation of a Real-NVP for Denisty Estimation. L. Dinh “Density estimation using Real NVP,” 2016.
+    This implementation only works for 1D arrays.
+    :param input_shape: shape of the data coming in the layer
+    :param hidden_units: Python list-like of non-negative integers, specifying the number of units in each hidden layer.
+    """
 
-        self.num_coupling_layers = num_coupling_layers
-
-        # Distribution of the latent space.
-        self.distribution = tfd.MultivariateNormalDiag(loc=tf.zeros([input_shape], tf.float32), scale_diag=tf.ones([input_shape], tf.float32))
-        self.masks = np.array(
-            [[0, 1], [1, 0]] * (num_coupling_layers // 2), dtype="float32"
+    def __init__(self, input_shape, n_hidden=[512, 512], forward_min_event_ndims=1, validate_args: bool = False, name="real_nvp"):
+        super(RealNVPBijector, self).__init__(
+            validate_args=validate_args, forward_min_event_ndims=forward_min_event_ndims, name=name
         )
-        self.loss_tracker = tfk.metrics.Mean(name="loss")
-        self.layers_list = [Coupling(input_shape) for i in range(num_coupling_layers)]
 
-    @property
-    def metrics(self):
-        """List of the model's metrics.
-        We make sure the loss tracker is listed as part of `model.metrics`
-        so that `fit()` and `evaluate()` are able to `reset()` the loss tracker
-        at the start of each epoch and at the start of an `evaluate()` call.
-        """
-        return [self.loss_tracker]
+        assert input_shape % 2 == 0
+        input_shape = input_shape // 2
+        nn_layer = NN(input_shape, n_hidden)
+        x = tf.keras.Input(input_shape)
+        log_s, t = nn_layer(x)
+        self.nn = Model(x, [log_s, t], name="nn")
+        
+    def _bijector_fn(self, x):
+        log_s, t = self.nn(x)
+        return tfb.affine_scalar.AffineScalar(shift=t, log_scale=log_s)
 
-    def call(self, x, training=True):
-        log_det_inv = 0
-        direction = 1
-        if training:
-            direction = -1
-        for i in range(self.num_coupling_layers)[::direction]:
-            x_masked = x * self.masks[i]
-            reversed_mask = 1 - self.masks[i]
-            s, t = self.layers_list[i](x_masked)
-            s *= reversed_mask
-            t *= reversed_mask
-            gate = (direction - 1) / 2
-            x = (
-                reversed_mask
-                * (x * tf.exp(direction * s) + direction * t * tf.exp(gate * s))
-                + x_masked
-            )
-            log_det_inv += gate * tf.reduce_sum(s, [1])
+    def _forward(self, x):
+        x_a, x_b = tf.split(x, 2, axis=-1)
+        y_b = x_b
+        y_a = self._bijector_fn(x_b).forward(x_a)
+        y = tf.concat([y_a, y_b], axis=-1)
+        return y
 
-        return x, log_det_inv
+    def _inverse(self, y):
+        y_a, y_b = tf.split(y, 2, axis=-1)
+        x_b = y_b
+        x_a = self._bijector_fn(y_b).inverse(y_a)
+        x = tf.concat([x_a, x_b], axis=-1)
+        return x
 
-    # Log likelihood of the normal distribution plus the log determinant of the jacobian.
-
-    def log_loss(self, x):
-        y, logdet = self(x)
-        log_likelihood = self.distribution.log_prob(y) + logdet
-        return -tf.reduce_mean(log_likelihood)
-
-    def train_step(self, data):
-        with tf.GradientTape() as tape:
-
-            loss = self.log_loss(data)
-
-        g = tape.gradient(loss, self.trainable_variables)
-        self.optimizer.apply_gradients(zip(g, self.trainable_variables))
-        self.loss_tracker.update_state(loss)
-
-        return {"loss": self.loss_tracker.result()}
-
-    def test_step(self, data):
-        loss = self.log_loss(data)
-        self.loss_tracker.update_state(loss)
-
-        return {"loss": self.loss_tracker.result()}
+    def _forward_log_det_jacobian(self, x):
+        x_a, x_b = tf.split(x, 2, axis=-1)
+        return self._bijector_fn(x_b).forward_log_det_jacobian(x_a, event_ndims=1)
+    
+    def _inverse_log_det_jacobian(self, y):
+        y_a, y_b = tf.split(y, 2, axis=-1)
+        return self._bijector_fn(y_b).inverse_log_det_jacobian(y_a, event_ndims=1)
 
 
-# -----------------------------------------------------
+class RealNVP(FlowModel):
+    def __init__(self, *args, **kwargs):
+        super(RealNVP, self).__init__(*args, **kwargs)
+        self.build_flow()
+
+    def build_flow(self):
+        permutation = tf.cast(np.concatenate((np.arange(self.ndims / 2, self.ndims), np.arange(0, self.ndims / 2))), tf.int32)
+        bijectors = []
+        for i in range(self.num_bijectors):
+            bijectors.append(tfb.BatchNormalization())
+            bijectors.append(RealNVPBijector(input_shape=self.ndims, n_hidden=self.hidden_units, name='real_nvp%d' % i))
+            bijectors.append(tfp.bijectors.Permute(permutation, name='permutation%d' % i))
+
+        flow_bijector = tfb.Chain(list(reversed(bijectors)))
+        self.flow = tfd.TransformedDistribution(
+            distribution=self.base_dist, 
+            bijector=flow_bijector)
+
+
+'''--------------------------------------------- PReLU -----------------------------------------------'''
 
 class PReLU(tfb.Bijector):
     def __init__(self, alpha=0.5, validate_args=False, name="prelu"):
